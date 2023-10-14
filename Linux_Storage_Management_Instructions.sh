@@ -595,3 +595,218 @@ sudo cryptsetup luksFormat /dev/nvme4n1p2
 sudo cryptsetup luksFormat /dev/nvme4n1p3
 sudo cryptsetup luksFormat /dev/nvme4n1p4
 
+# Create and Manage Raid(Redundant Array of Independent Disk)
+Redundant - keep the same data in multiple places
+Level 0 is not redundant
+Level 1 array / mirrored array
+Level 5 uses parity - a small backup used to rebuild lost information we can loss 1 disk and still be able to recover data
+Level 6 uses 4 disks to create such an array, we can loss two disks and still be able to recover the data
+Level 10/1+0 - its a combination of levle 1 and level 0
+
+lsblk
+NAME                                                                    MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+nvme2n1                                                                 259:5    0    10G  0 disk 
+nvme3n1                                                                 259:6    0   100G  0 disk 
+nvme4n1                                                                 259:7    0    10G  0 disk
+
+sudo mdadm --create /dev/md0 --level=0 --raid-devices=3 /dev/nvme2n1  /dev/nvme3n1 /dev/nvme4n1
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+
+sudo mkfs.ext4 /dev/md0
+mke2fs 1.46.5 (30-Dec-2021)
+Creating filesystem with 31450368 4k blocks and 7864320 inodes
+Filesystem UUID: 9ec1f86e-dc23-40b0-ba5c-78eaf5eface7
+Superblock backups stored on blocks: 
+        32768, 98304, 163840, 229376, 294912, 819200, 884736, 1605632, 2654208, 
+        4096000, 7962624, 11239424, 20480000, 23887872
+
+Allocating group tables: done                            
+Writing inode tables: done                            
+Creating journal (131072 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+sudo mdadm --stop /dev/md0
+mdadm: stopped /dev/md0
+
+sudo mdadm --zero-superblock  /dev/nvme2n1  /dev/nvme3n1 /dev/nvme4n1
+
+# Adding a spare disk to an array
+sudo mdadm --create /dev/md0 --level=1 --raid-devices=2 /dev/nvme2n1  /dev/nvme3n1 --spare-devices=1 /dev/nvme4n1
+mdadm: Note: this array has metadata at the start and
+    may not be suitable as a boot device.  If you plan to
+    store '/boot' on this device please ensure that
+    your boot-loader understands md/v1.x metadata, or use
+    --metadata=0.90
+mdadm: largest drive (/dev/nvme3n1) exceeds size (10476544K) by more than 1%
+Continue creating array? y
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+
+# Another scenario of adding disks to an array
+sudo mdadm --create /dev/md0 --level=1 --raid-devices=2 /dev/nvme2n1  /dev/nvme3n1
+sudo mdadm --manage /dev/md0 --add /dev/nvme4n1
+
+cat /proc/mdstat
+Personalities : [raid0] [raid1] 
+md0 : active raid1 nvme4n1[2](S) nvme3n1[1] nvme2n1[0]
+      10476544 blocks super 1.2 [2/2] [UU]
+      
+unused devices: <none>
+
+sudo mdadm --manage /dev/md0 --remove /dev/nvme4n1
+
+cat /proc/mdstat
+Personalities : [raid0] [raid1] 
+md0 : active raid1 nvme3n1[1] nvme2n1[0]
+      10476544 blocks super 1.2 [2/2] [UU]
+      
+unused devices: <none>
+
+# Creating, managing and diagnose advanced file system permissions
+touch file{1..3}
+
+ls -l
+total 32
+-rw-rw-r--. 1 timeline timeline     0 Oct 14 13:26 file1
+-rw-rw-r--. 1 timeline timeline     0 Oct 14 13:26 file2
+-rw-rw-r--. 1 timeline timeline     0 Oct 14 13:26 file3
+
+echo "This is the file content" > examplefile
+sudo groupadd ftp
+sudo useradd adm -g ftp
+sudo chown adm:ftp examplefile
+
+ls -l
+rw-rw-r--. 1 adm      ftp         25 Oct 14 13:29 examplefile
+
+id
+uid=1000(timeline) gid=1000(timeline) groups=1000(timeline)
+
+echo "This is the NEW content" > examplefile 
+bash: examplefile: Permission denied
+
+cat examplefile
+This is the file content
+
+# Using set file access control list(setfacl)
+sudo setfacl --modify user:timeline:rw examplefile
+
+echo "This is the NEW content" >> examplefile 
+cat examplefile
+This is the file content
+This is the NEW content
+
+# To see files with ACL 
+ls -l  - will show the file with a plus mark
+-rw-rw-r--+ 1 adm      ftp         49 Oct 14 13:39 examplefile
+
+getfacl examplefile
+# file: examplefile
+# owner: adm
+# group: ftp
+user::rw-
+user:timeline:rw-
+group::rw-
+mask::rw-
+other::r--
+
+# Modifying the mask
+sudo setfacl --modify mask:r examplefile
+
+getfacl examplefile
+# file: examplefile
+# owner: adm
+# group: ftp
+user::rw-
+user:timeline:rw-               #effective:r--
+group::rw-                      #effective:r--
+mask::r--
+other::r--
+
+# To let any user in the group to read and write the file
+sudo setfacl --modify group:wheel:rw examplefile
+
+# To deny permissions to a specific user
+sudo setfacl --modify user:adm:--- examplefile
+
+# To remove acl for a specific user or group
+sudo setfacl --remove user:adm examplefile
+sudo setfacl --remove group:wheel examplefile
+sudo setfacl --recursive -m user:aron:rwx exampleDir_plus_subDirs_and_files
+sudo setfacl --recursive --modify user:adm:rwx exampleDir_plus_subDirs_and_files
+sudo setfacl --recursive  --remove user:adm:exampleDir_plus_subDirs_and_files
+
+# Append only and Immutable Attribute Options
+echo "This is old content" > newfile
+sudo chattr +a newfile
+echo "Replace existing Content" > newfile
+newfile: Operation not permitted
+
+echo "Instead of replace existing Content, let's append it" >? newfile
+
+cat newfile 
+"This is old content"
+"Instead of replace existing Content, let's append it"
+
+# Remove the attribute
+sudo chattr -a newfile
+
+# Add immutability to a file and freez it no OS user including root can do anything on the file
+sudo chattr +i newfile
+
+# Check immutability in a file
+sudo lsattr newfile
+----i---------e----- newfile
+
+sudo chattr -i newfile
+
+# Setup user and group disk quotas for filesystems
+sudo dnf install quota -y
+sudo apt install quota -y
+
+# Choosing file systems where we want to enforce quotas - enable quotas for users(usrquota) and groups(grpquota) on XFS file system
+sudo vi /etc/fstab
+/dev/vdb1 /mybackups xfs ro,noexec 0 2
+/dev/vdb1 /mybackups xfs defaults,usrquota,grpquota 0 2
+sudo systemctl reboot
+
+# Choosing file systems where we want to enforce quotas - enable quotas for users(usrquota) and groups(grpquota) on ext4 file system
+sudo vi /etc/fstab
+/dev/vdb1 /mybackups ext4 ro,noexec 0 2
+/dev/vdb1 /mybackups ext4 defaults,usrquota,grpquota 0 2
+sudo xfs_quota -x -c 'limit bsoft=100m bhard=500m john' /mybackups/
+sudo quotacheck --create-files --user --group /dev/vdb1
+ls
+aquota.group aquota.user
+sudo quotaon  /mybackups
+sudo systemctl reboot
+
+# Example of managing quotas
+sudo mkdir /mybackups/cedric
+sudo chown cedric:cedric /mybackups/cedric/
+fallocate --length 100M /mybackups/cedric/100Mfile
+
+# 
+fallocate --length 60M /mybackups/cedric/60Mfile
+
+sudo quota --user cedric
+sudo edquota --user cedric
+
+# Add Grace Period on a limit of quota
+sudo --quota --edit-period
+
+# For group
+
+sudo quota --group adm
+sudo edquota --group adm
+
+
+
+
+
+
+
+
+
+
